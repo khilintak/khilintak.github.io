@@ -1,3 +1,13 @@
+# bash 
+npm install express cors multer dotenv
+npm install -D nodemon
+
+
+
+"scripts": {
+  "start": "node server.cjs",
+  "server:dev": "nodemon server.cjs"
+}
 {
   "name": "planet-plus",
   "private": true,
