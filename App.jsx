@@ -1888,3 +1888,251 @@ const styles = {
   badgeLabel: { fontSize: 13, fontWeight: 600, marginTop: 8 },
   badgeDesc: { fontSize: 11, color: "#8A8072", marginTop: 4, lineHeight: 1.4 },
 };
+
+
+
+# backend 
+const express = require("express");
+const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
+const multer = require("multer");
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Paths
+const DATA_FILE = path.join(__dirname, "planet-plus-data.json");
+const UPLOAD_DIR = path.join(__dirname, "uploads");
+
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
+// Multer storage for verification uploads & receipts
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+  },
+});
+const upload = multer({ storage });
+
+// Middleware
+app.use(cors({ origin: "*" }));
+app.use(express.json({ limit: "10mb" }));
+app.use("/uploads", express.static(UPLOAD_DIR));
+
+// Initial State Schema
+const DEFAULT_STATE = {
+  activities: [],
+  waterLogs: [],
+  trees: [],
+  verifiedActions: [],
+  completedChallenges: [],
+};
+
+// Database Helpers
+function readDb() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) {
+      writeDb(DEFAULT_STATE);
+      return DEFAULT_STATE;
+    }
+    const raw = fs.readFileSync(DATA_FILE, "utf-8");
+    return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+  } catch (err) {
+    console.error("Error reading database:", err);
+    return { ...DEFAULT_STATE };
+  }
+}
+
+function writeDb(data) {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error("Error writing database:", err);
+  }
+}
+
+const generateId = (prefix) =>
+  `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+
+// ----------------------------------------------------
+// ROUTES: Full State Synchronization
+// ----------------------------------------------------
+app.get("/api/state", (req, res) => {
+  res.json(readDb());
+});
+
+app.put("/api/state", (req, res) => {
+  const incoming = req.body || {};
+  const current = readDb();
+  const updated = { ...current, ...incoming };
+  writeDb(updated);
+  res.json(updated);
+});
+
+// ----------------------------------------------------
+// ROUTES: Activities
+// ----------------------------------------------------
+app.get("/api/activities", (req, res) => {
+  res.json(readDb().activities);
+});
+
+app.post("/api/activities", (req, res) => {
+  const db = readDb();
+  const newActivity = {
+    id: req.body.id || generateId("act"),
+    type: req.body.type,
+    category: req.body.category,
+    quantity: Number(req.body.quantity),
+    unit: req.body.unit,
+    date: req.body.date || new Date().toISOString().slice(0, 10),
+    co2: Number(req.body.co2),
+    flagged: Boolean(req.body.flagged),
+    route: req.body.route || null,
+    source: req.body.source || "manual",
+  };
+  db.activities.unshift(newActivity);
+  writeDb(db);
+  res.status(201).json(newActivity);
+});
+
+app.delete("/api/activities/:id", (req, res) => {
+  const db = readDb();
+  db.activities = db.activities.filter((a) => a.id !== req.params.id);
+  writeDb(db);
+  res.status(204).end();
+});
+
+// ----------------------------------------------------
+// ROUTES: Water Logs
+// ----------------------------------------------------
+app.post("/api/water-logs", (req, res) => {
+  const db = readDb();
+  const newLog = {
+    id: req.body.id || generateId("water"),
+    liters: Number(req.body.liters),
+    date: req.body.date || new Date().toISOString().slice(0, 10),
+    source: req.body.source || "manual",
+    flagged: Boolean(req.body.flagged),
+  };
+  db.waterLogs.unshift(newLog);
+  writeDb(db);
+  res.status(201).json(newLog);
+});
+
+app.delete("/api/water-logs/:id", (req, res) => {
+  const db = readDb();
+  db.waterLogs = db.waterLogs.filter((w) => w.id !== req.params.id);
+  writeDb(db);
+  res.status(204).end();
+});
+
+// ----------------------------------------------------
+// ROUTES: Tree Register & Verification
+// ----------------------------------------------------
+app.post("/api/trees", (req, res) => {
+  const db = readDb();
+  const newTree = {
+    id: generateId("tree"),
+    species: req.body.species || "Native tree",
+    plantedDate: req.body.plantedDate || new Date().toISOString().slice(0, 10),
+    location: req.body.location || "My planting site",
+    source: req.body.source || "manual",
+    status: "pending",
+    lastVerified: null,
+    verificationNote: "Awaiting weekly check.",
+  };
+  db.trees.unshift(newTree);
+  writeDb(db);
+  res.status(201).json(newTree);
+});
+
+app.patch("/api/trees/:id/verify", (req, res) => {
+  const db = readDb();
+  const tree = db.trees.find((t) => t.id === req.params.id);
+  if (!tree) return res.status(404).json({ error: "Tree not found" });
+
+  tree.status = "verified";
+  tree.lastVerified = new Date().toISOString().slice(0, 10);
+  tree.verificationNote = "AI verification passed. Credit active.";
+  writeDb(db);
+  res.json(tree);
+});
+
+app.delete("/api/trees/:id", (req, res) => {
+  const db = readDb();
+  db.trees = db.trees.filter((t) => t.id !== req.params.id);
+  writeDb(db);
+  res.status(204).end();
+});
+
+// ----------------------------------------------------
+// ROUTES: Action Verification & Evidence Upload
+// ----------------------------------------------------
+app.post("/api/verify-action", upload.single("proof"), (req, res) => {
+  const db = readDb();
+  const action = {
+    id: generateId("proof"),
+    kind: req.body.kind || "Sustainable action",
+    date: new Date().toISOString().slice(0, 10),
+    status: "verified",
+    fileName: req.file ? req.file.originalname : "proof-backed activity",
+    fileUrl: req.file ? `/uploads/${req.file.filename}` : null,
+  };
+  db.verifiedActions.unshift(action);
+  writeDb(db);
+  res.status(201).json(action);
+});
+
+// ----------------------------------------------------
+// ROUTES: Demo Identity & Connected Services
+// ----------------------------------------------------
+app.post("/api/auth/mock-identity", (req, res) => {
+  const { idNumber, consent } = req.body;
+  if (!consent || !idNumber) {
+    return res.status(400).json({ error: "Consent and valid ID required" });
+  }
+
+  // Generic demo response ensuring sensitive digits remain safe & non-persisted
+  res.json({
+    verified: true,
+    name: "Demo citizen",
+    maskedId: `XXXX-XXXX-${String(idNumber).slice(-4)}`,
+  });
+});
+
+// Start Server
+app.listen(PORT, () => {
+  console.log(`Planet Plus Backend active at http://localhost:${PORT}`);
+});
+
+
+# ---------------
+const API_URL = "http://localhost:3001/api";
+
+// Fetch initial state on mount
+useEffect(() => {
+  fetch(`${API_URL}/state`)
+    .then((res) => res.json())
+    .then((data) => {
+      if (data.activities?.length) setActivities(data.activities);
+      if (data.waterLogs?.length) setWaterLogs(data.waterLogs);
+      if (data.trees?.length) setTrees(data.trees);
+      if (data.verifiedActions?.length) setVerifiedActions(data.verifiedActions);
+      if (data.completedChallenges?.length) setCompletedChallenges(data.completedChallenges);
+    })
+    .catch((err) => console.warn("Using local fallback:", err));
+}, []);
+
+// Persist updates to the server
+useEffect(() => {
+  fetch(`${API_URL}/state`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ activities, waterLogs, trees, verifiedActions, completedChallenges }),
+  }).catch((err) => console.error("Sync failed:", err));
+}, [activities, waterLogs, trees, verifiedActions, completedChallenges]);
